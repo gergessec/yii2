@@ -8,11 +8,7 @@ use yii\db\DataReader;
 use yii\db\Expression;
 use yii\db\Schema;
 
-/**
- * @group db
- * @group mysql
- */
-class CommandTest extends DatabaseTestCase
+abstract class CommandTest extends DatabaseTestCase
 {
     public function testConstruct()
     {
@@ -142,6 +138,10 @@ class CommandTest extends DatabaseTestCase
 
     public function testBindParamValue()
     {
+        if (defined('HHVM_VERSION') && $this->driverName === 'pgsql') {
+            $this->markTestSkipped('HHVMs PgSQL implementation has some specific behavior that breaks some parts of this test.');
+        }
+        
         $db = $this->getConnection();
 
         // bindParam
@@ -199,12 +199,14 @@ SQL;
         $this->assertEquals($floatCol, $row['float_col']);
         if ($this->driverName === 'mysql' || $this->driverName === 'sqlite' || $this->driverName === 'oci') {
             $this->assertEquals($blobCol, $row['blob_col']);
+        } elseif (defined('HHVM_VERSION') && $this->driverName === 'pgsql') {
+            // HHVMs pgsql implementation does not seem to support blob columns correctly.
         } else {
             $this->assertTrue(is_resource($row['blob_col']));
             $this->assertEquals($blobCol, stream_get_contents($row['blob_col']));
         }
         $this->assertEquals($numericCol, $row['numeric_col']);
-        if ($this->driverName === 'mysql' || (defined('HHVM_VERSION') && $this->driverName === 'sqlite') || $this->driverName === 'oci') {
+        if ($this->driverName === 'mysql' || $this->driverName === 'oci' || (defined('HHVM_VERSION') && in_array($this->driverName, ['sqlite', 'pgsql']))) {
             $this->assertEquals($boolCol, (int) $row['bool_col']);
         } else {
             $this->assertEquals($boolCol, $row['bool_col']);
@@ -220,6 +222,33 @@ SQL;
         $command = $db->createCommand($sql);
         $command->bindValue(':name', 'user5');
         $this->assertEquals('user5@example.com', $command->queryScalar());
+    }
+
+    public function paramsNonWhereProvider()
+    {
+        return[
+            ['SELECT SUBSTR(name, :len) FROM {{customer}} WHERE [[email]] = :email GROUP BY SUBSTR(name, :len)'],
+            ['SELECT SUBSTR(name, :len) FROM {{customer}} WHERE [[email]] = :email ORDER BY SUBSTR(name, :len)'],
+            ['SELECT SUBSTR(name, :len) FROM {{customer}} WHERE [[email]] = :email'],
+        ];
+    }
+
+    /**
+     * Test whether param binding works in other places than WHERE
+     * @dataProvider paramsNonWhereProvider
+     */
+    public function testBindParamsNonWhere($sql)
+    {
+        $db = $this->getConnection();
+
+        $db->createCommand()->insert('customer', ['name' => 'testParams', 'email' => 'testParams@example.com', 'address' => '1'])->execute();
+
+        $params = [
+            ':email' => 'testParams@example.com',
+            ':len' => 5,
+        ];
+        $command = $db->createCommand($sql, $params);
+        $this->assertEquals('Params', $command->queryScalar());
     }
 
     public function testFetchMode()
@@ -258,12 +287,21 @@ SQL;
             ]
         );
         $this->assertEquals(2, $command->execute());
+
+        // @see https://github.com/yiisoft/yii2/issues/11693
+        $command = $this->getConnection()->createCommand();
+        $command->batchInsert(
+            '{{customer}}',
+            ['email', 'name', 'address'],
+            []
+        );
+        $this->assertEquals(0, $command->execute());
     }
 
     public function testInsert()
     {
         $db = $this->getConnection();
-        $db->createCommand('DELETE FROM {{customer}};')->execute();
+        $db->createCommand('DELETE FROM {{customer}}')->execute();
 
         $command = $db->createCommand();
         $command->insert(
@@ -275,7 +313,7 @@ SQL;
             ]
         )->execute();
         $this->assertEquals(1, $db->createCommand('SELECT COUNT(*) FROM {{customer}};')->queryScalar());
-        $record = $db->createCommand('SELECT email, name, address FROM {{customer}};')->queryOne();
+        $record = $db->createCommand('SELECT [[email]], [[name]], [[address]] FROM {{customer}}')->queryOne();
         $this->assertEquals([
             'email' => 't1@example.com',
             'name' => 'test',
@@ -286,7 +324,7 @@ SQL;
     public function testInsertExpression()
     {
         $db = $this->getConnection();
-        $db->createCommand('DELETE FROM {{order_with_null_fk}};')->execute();
+        $db->createCommand('DELETE FROM {{order_with_null_fk}}')->execute();
 
         switch($this->driverName){
             case 'pgsql':
@@ -311,8 +349,8 @@ SQL;
                 'total' => 1,
             ]
         )->execute();
-        $this->assertEquals(1, $db->createCommand('SELECT COUNT(*) FROM {{order_with_null_fk}};')->queryScalar());
-        $record = $db->createCommand('SELECT created_at FROM {{order_with_null_fk}};')->queryOne();
+        $this->assertEquals(1, $db->createCommand('SELECT COUNT(*) FROM {{order_with_null_fk}}')->queryScalar());
+        $record = $db->createCommand('SELECT [[created_at]] FROM {{order_with_null_fk}}')->queryOne();
         $this->assertEquals([
             'created_at' => date('Y'),
         ], $record);

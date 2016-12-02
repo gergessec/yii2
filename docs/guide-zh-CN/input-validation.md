@@ -126,7 +126,7 @@ public function rules()
 /**
  * @param Model $model 要验证的模型对象
  * @param string $attribute 待测特性名
- * @return boolean 返回是否启用该规则
+ * @return bool 返回是否启用该规则
  */
 function ($model, $attribute)
 ```
@@ -444,7 +444,7 @@ class StatusValidator extends Validator
         $statuses = json_encode(Status::find()->select('id')->asArray()->column());
         $message = json_encode($this->message);
         return <<<JS
-if (!$.inArray(value, $statuses)) {
+if ($.inArray(value, $statuses) === -1) {
     messages.push($message);
 }
 JS;
